@@ -2,6 +2,7 @@
 Computes the greedy score for a candidate.
 """
 from compsoc.profile import Profile
+import itertools
 
 def greedyN_rule(profile: Profile, candidate: int) -> int:
     topN = 1
@@ -30,9 +31,8 @@ def greedyN_rule(profile: Profile, candidate: int) -> int:
     
     def utilityForRanking (ranking: list[int], topN_parm: int) -> int:
         # Calculate utility of a given ranking for a given topN_parm value
-        cand_ranking = []
-        for i in ranking:
-            cand_ranking.append(i[0])
+        cand_ranking = ranking
+
 
 
         # iterate over the voters
@@ -48,27 +48,57 @@ def greedyN_rule(profile: Profile, candidate: int) -> int:
 
         return overall_utility
 
+    def compute_permutations(candidates):
+        # base cases
+        if len(candidates) == 0:
+            return []
+        elif len(candidates) == 1:
+            return [candidates]
+        
+        permutations = []
+        for candidate in range(len(candidates)):
+            fir_cand = candidates[candidate]
+            rest_cand = candidates[:candidate] + candidates[candidate + 1:]
+            for rest in compute_permutations(rest_cand):
+                permutations.append([fir_cand] + rest)
+        return permutations
 
     # Compute optimal when topN is each possible value to find live options
     # Find whole ranking for topN=1, topN=2, etc    
     liveOptions = []
-    for j in range(len(profile.candidates) // 2):
-        topN = j + 1
-        rankings = profile.ranking(scoreOne)
-        liveOptions.append(rankings)
+    if(len(profile.candidates)<=5):
+        liveOptions = compute_permutations(list(profile.candidates))
+
+    else:
+        for j in range(len(profile.candidates) // 2):
+            topN = j + 1
+            rankings = profile.ranking(scoreOne)
+            liveOptions.append(rankings)
+        cand_ranking = []
+        for pairs in liveOptions:
+            temp =[]
+            for j in pairs:
+                temp.append(j[0])
+            cand_ranking.append(temp)
+        liveOptions = cand_ranking
+
     
     # Figure out which of the live options is the best expected value
-    expectedUtilities = [0]* (len(profile.candidates) // 2)
+
+    expectedUtilities = [0]* (len(liveOptions))
     # iterate over the live options
-    for j in range(len(profile.candidates) // 2):
+    for j in range(len(liveOptions)):
         # iterate over possible values of topN
-        for m in range(1, len(profile.candidates) // 2):
-            expectedUtilities[j] += utilityForRanking(liveOptions[j], m)
+        for m in range(len(profile.candidates) // 2):
+            expectedUtilities[j] += utilityForRanking(liveOptions[j], m+1)
 
 
     # Find highest utility
     bestLiveOption = expectedUtilities.index(max(expectedUtilities))
 
     # Return the score for this candidate based on that ordering
-    topN = bestLiveOption + 1
-    return scoreOne(profile, candidate)
+    #topN = bestLiveOption + 1
+    print(liveOptions)
+    cand_ranking = liveOptions[bestLiveOption].index(candidate)
+    
+    return ((len(profile.candidates)) - cand_ranking)
