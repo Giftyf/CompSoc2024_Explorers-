@@ -1,5 +1,5 @@
 """
-Computes the greedy score for a candidate.
+Computes the score for a candidate.
 """
 from compsoc.profile import Profile
 import itertools
