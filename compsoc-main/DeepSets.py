@@ -11,13 +11,14 @@ import random
 from typing import List, Optional, Tuple
 #from compsoc.voting_rules.greedyN import greedyN_rule
 from compsoc.voter_model import generate_random_votes
+from torchmetrics import RetrievalMRR
 """from torchinfo import summary
 from torchvision import datasets
 import torchvision.transforms as transforms"""
 from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler, TensorDataset, random_split
 import torch.optim as optim
-
-
+import matplotlib.pyplot as plt
+from scipy import stats
 def greedyN_rule(profile: Profile, candidate: int) -> int:
     topN = 1
 
@@ -129,8 +130,17 @@ def compute_ranking(profile: Profile) -> List[int]:
   ranking = []
   for candidate, score in sorted_candidates:
     ranking.append(candidate)
+
+
   return ranking
 
+def compute_score(profile:Profile) ->List[float]:
+    ranking = compute_ranking(profile)
+    scores = [0] *len(ranking)
+    for i in range(len(ranking)):
+        index = ranking[i]
+        scores[index]= (len(ranking) - i)/len(ranking)
+    return scores
 
 #Function to produce training data
 def generate_training_data(num_samples: int) ->List[Tuple[Profile, List[int]]]:
@@ -140,21 +150,46 @@ def generate_training_data(num_samples: int) ->List[Tuple[Profile, List[int]]]:
     num_voters = random.randint(10, 10000)
     votes = generate_random_votes(num_voters, num_cand)
     profile = Profile(votes)
-    ranking = compute_ranking(profile)
-    ranking = ranking + list(range(num_cand, 21))
+    scores = compute_score(profile)
+    scores = scores + [0]*(20-num_cand)
     duplicated_votes = []
+    duplicated_scores = [0]*len(scores)
+
     for count, ballot in profile.pairs:
-        ballot = ballot + tuple(range(num_cand+20, 40))
+        ballot = ballot + tuple(range(num_cand, 20))
         duplicated_votes.extend([ballot]* count)
+
+    #rand[0]
+    rand = np.random.permutation(20)
+    print(rand)
+    #shuffle the candidates
+    for j in range(len(duplicated_votes)):
+        ballot = duplicated_votes[j]
+        ballot = list(ballot)
+        for i in range(len(ballot)):
+            ballot[i] = rand[ballot[i]]
+        ballot = tuple(ballot)
+        duplicated_votes[j] = ballot
+
+
+    for i in range(len(scores)):
+        duplicated_scores[i]=  scores[rand[i]] 
+
+    print("scores:",scores)
+    print(duplicated_scores)
+    
+
     
     #duplicated_votes get the num_of_cand and subract if from 20
     
     num_dum_voter = 10000 - num_voters
-    dum_votes = [[40]*20]*num_dum_voter
+    dum_votes = [[20]*20]*num_dum_voter
 
     padded_profiles = duplicated_votes + dum_votes  
     padded_profiles_tensor = torch.tensor(padded_profiles, dtype=torch.float32)
-    ranking_tensor = torch.tensor(ranking, dtype=torch.float32)
+
+
+    ranking_tensor = torch.tensor(duplicated_scores, dtype=torch.float32)
 
     training_data.append((padded_profiles_tensor, ranking_tensor))
 
@@ -218,8 +253,7 @@ class DeepSetOriginal(nn.Module):
     def forward(self, X, **kwargs):
         X = self.enc(X).mean(-2)
         X = self.dec(X).reshape(-1, self.num_outputs, self.dim_output)
-        print(X)
-        return X 
+        return X.squeeze(1) 
     
     #utility function to calculate the score for the given ranking
     def utility_for_ranking(self, ranking, pairs):
@@ -266,7 +300,15 @@ class DeepSetOriginal(nn.Module):
                     # No loss if true_diff == 0 (equal ranking)
 
         return loss / (batch_size * num_candidates * (num_candidates - 1) / 2)
-        
+    
+    #ListNet Loss
+    def listnet_loss(self, predicted_scores, true_scores):
+        predicted_scores = predicted_scores.squeeze(-1)
+        predicted_prob = torch.softmax(predicted_scores, dim=1)
+        true_prob = torch.softmax(true_scores, dim=1)
+        loss = -torch.sum(true_prob * torch.log(predicted_prob + 1e-10), dim=1).mean()
+        print("Loss:", loss)
+        return loss   
 
 
 
@@ -275,7 +317,9 @@ print(model)
 print(summary(model))"""
 print(253)
 training_data = generate_training_data(10)
-
+for x, y in training_data:
+    print("Scores:", y)
+    break
 
 profiles_list = [item[0] for item in training_data]
 rankings_list = [item[1] for item in training_data]
@@ -309,35 +353,175 @@ print(276)
 """
 print(282)
 # Instantiate the model 
-model = DeepSetOriginal(20, 20, 20)
+model = DeepSetOriginal(20, 20, 1)
 optimizer = optim.Adam(model.parameters(), lr=0.001)
-num_epochs = 10  
+num_epochs = 20
 
-for epoch in range(num_epochs):
-    print(296)
-    model.train()
-    for profiles_batch, rankings_batch in train_loader:
-        optimizer.zero_grad()
-        
-        outputs = model(profiles_batch)
-    
-        loss = model.pairwise_ranking_loss(outputs, rankings_batch)
-        
-        loss.backward()
-        optimizer.step()
-    
-    print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item()}')
 
-    # Validation 
+
+
+def train_model(train_loader, val_loader, model, optimizer, epochs):
+    metric_info = {}
+    metric_info['val_spearman_list']= []
+    metric_info['train_spearman_list']= []
+    metric_info['val_loss_list'] = []
+    metric_info['train_loss_list'] = []
+
+    for epoch in range(epochs):
+    
+        model.train()
+        total_train_loss = 0.0
+        total_train_spearman = 0.0
+        
+        for profiles_batch, rankings_batch in train_loader:
+            optimizer.zero_grad()
+            
+            outputs = model(profiles_batch)
+        
+            loss = model.listnet_loss(outputs, rankings_batch)
+            total_train_loss += loss.item()
+            
+            loss.backward()
+            optimizer.step()
+            outputs = outputs.squeeze(-1)
+            
+            batch_spearman = 0.0
+            
+                
+            for i in range(outputs.size(0)):
+                preds = outputs[i].detach().cpu().numpy()
+                targets = rankings_batch[i].detach().cpu().numpy()
+                spearman_corr, _ = stats.spearmanr(preds, targets)
+                batch_spearman += spearman_corr
+                
+            batch_spearman /= outputs.size(0)
+            total_train_spearman += batch_spearman
+        
+        avg_train_loss = total_train_loss / len(train_loader)
+        avg_train_spearman = total_train_spearman / len(train_loader)
+        metric_info['train_loss_list'].append(avg_train_loss)
+        metric_info['train_spearman_list'].append(avg_train_spearman)
+        
+        print(f'Epoch [{epoch+1}/{epochs}], Train Loss: {avg_train_loss:.4f}, Train Spearman: {avg_train_spearman:.4f}')
+        
+        model.eval()
+        total_val_loss = 0.0
+        total_val_spearman = 0.0
+        with torch.no_grad():
+            for profiles_batch, rankings_batch in val_loader:
+                outputs = model(profiles_batch)
+                loss = model.listnet_loss(outputs, rankings_batch)
+                total_val_loss += loss.item()
+                outputs = outputs.squeeze(-1)
+                
+                batch_spearman = 0.0
+                for i in range(outputs.size(0)):
+                    preds = outputs[i].detach().cpu().numpy()
+                    targets = rankings_batch[i].detach().cpu().numpy()
+                    spearman_corr, _ = stats.spearmanr(preds, targets)
+                    batch_spearman += spearman_corr
+                
+                batch_spearman /= outputs.size(0)
+                total_val_spearman += batch_spearman
+                
+        avg_val_loss = total_val_loss / len(val_loader)
+        avg_val_spearman = total_val_spearman / len(val_loader)
+        metric_info['val_loss_list'].append(avg_val_loss)
+        metric_info['val_spearman_list'].append(avg_val_spearman)
+        
+        print(f'Epoch [{epoch+1}/{epochs}], Val Loss: {avg_val_loss:.4f}, Val Spearman: {avg_val_spearman:.4f}')
+    
+    return metric_info
+
+
+
+
+
+# train the model
+metric_info = train_model(train_loader, val_loader, model, optimizer, num_epochs)
+
+
+def drawgraph(metric_info):
+    
+    x = np.arange(len(metric_info['train_spearman_list']))
+    plt.figure(figsize=(20, 6))
+    plt.subplot(1, 2, 1)
+    plt.plot(x, metric_info['train_spearman_list'], "ro-", label="train_spearman")
+    plt.plot(x, metric_info['val_spearman_list'], "b--", label="val_spearman")
+
+    plt.title("Training and Validation Spearman")
+    plt.xlabel("Epochs")
+    plt.ylabel("Spearman")
+    plt.legend(loc="lower right")
+
+
+    x = np.arange(len(metric_info['train_loss_list']))
+    plt.subplot(1, 2, 2)
+    plt.plot(x, metric_info['train_loss_list'], "ro-", label="train_loss")
+    plt.plot(x, metric_info['val_loss_list'], "b--", label="val_loss")
+    plt.title("Training and Validation Loss")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.legend(loc="lower right")
+
+    plt.show()
+
+drawgraph(metric_info)
+
+
+def model_test(test_loader, model):
+    model.eval()
+    total_test_loss = 0.0
+    total_test_spearman = 0.0
+    with torch.no_grad():
+        for profiles_batch, rankings_batch in test_loader:
+            outputs = model(profiles_batch)
+            loss = model.listnet_loss(outputs, rankings_batch)
+            total_test_loss += loss.item()
+            outputs = outputs.squeeze(-1)
+            
+            batch_spearman = 0.0
+            for i in range(outputs.size(0)):
+                preds = outputs[i].detach().cpu().numpy()
+                targets = rankings_batch[i].detach().cpu().numpy()
+                spearman_corr, _ =stats.spearmanr(preds, targets)
+                batch_spearman += spearman_corr
+                
+            batch_spearman /= outputs.size(0)
+            total_test_spearman += batch_spearman
+    
+    avg_test_loss = total_test_loss / len(test_loader)
+    avg_test_spearman = total_test_spearman / len(test_loader)
+    
+    print(f'Test Loss: {avg_test_loss:.4f}, Test Spearman: {avg_test_spearman:.4f}')
+    
+    return avg_test_loss, avg_test_spearman
+
+# test the model
+avg_test_loss, avg_test_spearman = model_test(test_loader, model)
+
+
+def predict_one(profile,model):
     model.eval()
     with torch.no_grad():
-        val_loss = 0.0
-        for profiles_batch, rankings_batch in val_loader:
-            outputs = model(profiles_batch)
-            loss = model.pairwise_ranking_loss(outputs, rankings_batch)
-            val_loss += loss.item()
-        val_loss /= len(val_loader)
-    print(f'Validation Loss: {val_loss}')
+        if not isinstance(profile, torch.Tensor):
+            profile = torch.tensor(profile)
+        if profile.dim()==1:
+            profile = profile.unsqueeze(0)
+        output = model(profile)
+        output = output.squeeze(0)
+
+    return output
 
 
+training_data = generate_training_data(1)
+sample_profiles = [item[0] for item in training_data]
+sample_rankings =[item[1] for item in training_data]
+
+print("Best Ranking: ", sample_rankings)
+
+print("Profile:",sample_profiles)
+for profile in sample_profiles:
+    prediction = predict_one(profile, model)
+    print("Prediction: ", prediction)
 
