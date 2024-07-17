@@ -159,7 +159,7 @@ def generate_training_data(num_samples: int) ->List[Tuple[Profile, List[int]]]:
         ballot = ballot + tuple(range(num_cand, 20))
         duplicated_votes.extend([ballot]* count)
 
-    #rand[0]
+    #rand renumbers candidates where old candidate number x becomes new candidate number rand[x]
     rand = np.random.permutation(20)
     print(rand)
     #shuffle the candidates
@@ -173,7 +173,7 @@ def generate_training_data(num_samples: int) ->List[Tuple[Profile, List[int]]]:
 
 
     for i in range(len(scores)):
-        duplicated_scores[i]=  scores[rand[i]] 
+        duplicated_scores[rand[i]]=  scores[i] 
 
     print("scores:",scores)
     print(duplicated_scores)
