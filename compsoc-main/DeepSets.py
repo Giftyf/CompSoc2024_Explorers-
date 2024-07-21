@@ -12,9 +12,6 @@ from typing import List, Optional, Tuple
 #from compsoc.voting_rules.greedyN import greedyN_rule
 from compsoc.voter_model import generate_random_votes
 from torchmetrics import RetrievalMRR
-"""from torchinfo import summary
-from torchvision import datasets
-import torchvision.transforms as transforms"""
 from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler, TensorDataset, random_split
 import torch.optim as optim
 import matplotlib.pyplot as plt
@@ -139,44 +136,33 @@ def compute_score(profile:Profile) ->List[float]:
     scores = [0] *len(ranking)
     for i in range(len(ranking)):
         index = ranking[i]
-        scores[index]= (len(ranking) - i)/len(ranking)
+        scores[index]= (len(profile.candidates) - i)/len(profile.candidates)
     return scores
 
 #Function to produce training data
-def generate_training_data(num_samples: int) ->List[Tuple[Profile, List[int]]]:
+def generate_training_data(num_samples: int, max_num_cand:int) ->List[Tuple[Profile, List[int]]]:
   training_data =[]
+  remap_cand_list = []
   for _ in range(num_samples):
-    num_cand = random.randint(4, 6)
+    num_cand = random.randint(4, max_num_cand)
     num_voters = random.randint(10, 10000)
     votes = generate_random_votes(num_voters, num_cand)
     profile = Profile(votes)
     scores = compute_score(profile)
     scores = scores + [0]*(20-num_cand)
+    """
+    for i in range(len(scores)):
+        if scores[i] == 0:
+            scores[i] = (20-i)/20
+    """
     duplicated_votes = []
     duplicated_scores = [0]*len(scores)
 
     for count, ballot in profile.pairs:
-        ballot = ballot + tuple(range(num_cand, 20))
+        ballot = ballot + tuple([20]*(20-num_cand))
         duplicated_votes.extend([ballot]* count)
+    #remap_cand renumbers candidates where old candidate number x becomes new candidate number remap_cand[x]
 
-    #rand renumbers candidates where old candidate number x becomes new candidate number rand[x]
-    rand = np.random.permutation(20)
-    print(rand)
-    #shuffle the candidates
-    for j in range(len(duplicated_votes)):
-        ballot = duplicated_votes[j]
-        ballot = list(ballot)
-        for i in range(len(ballot)):
-            ballot[i] = rand[ballot[i]]
-        ballot = tuple(ballot)
-        duplicated_votes[j] = ballot
-
-
-    for i in range(len(scores)):
-        duplicated_scores[rand[i]]=  scores[i] 
-
-    print("scores:",scores)
-    print(duplicated_scores)
     
 
     
@@ -189,13 +175,13 @@ def generate_training_data(num_samples: int) ->List[Tuple[Profile, List[int]]]:
     padded_profiles_tensor = torch.tensor(padded_profiles, dtype=torch.float32)
 
 
-    ranking_tensor = torch.tensor(duplicated_scores, dtype=torch.float32)
+    ranking_tensor = torch.tensor(scores, dtype=torch.float32)
 
     training_data.append((padded_profiles_tensor, ranking_tensor))
+    #remap_cand_list.append(remap_cand)
 
 
-
-  return training_data
+  return training_data #,remap_cand_list
 
 
 
@@ -316,7 +302,7 @@ class DeepSetOriginal(nn.Module):
 print(model)
 print(summary(model))"""
 print(253)
-training_data = generate_training_data(10)
+training_data = generate_training_data(400,6)
 for x, y in training_data:
     print("Scores:", y)
     break
@@ -340,11 +326,19 @@ test_size = len(dataset) - train_size - val_size
 train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
 print(270)
 
+test_dataset_gen= generate_training_data(50,20)
+profiles_test = [item[0] for item in test_dataset_gen]
+rankings_test = [item[1] for item in test_dataset_gen]
+
+profiles_tensor = torch.stack(profiles_test)
+rankings_tensor = torch.stack(rankings_test)
+
+dataset_test = TensorDataset(profiles_tensor, rankings_tensor)
 #create DataLoaders for each dataset
 batch_size = 32
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+test_loader = DataLoader(dataset_test, batch_size=batch_size, shuffle=False)
 print(276)
 """for profiles_batch, rankings_batch in train_loader:
     print("Profiles batch:", profiles_batch)
@@ -355,7 +349,7 @@ print(282)
 # Instantiate the model 
 model = DeepSetOriginal(20, 20, 1)
 optimizer = optim.Adam(model.parameters(), lr=0.001)
-num_epochs = 20
+num_epochs = 10
 
 
 
@@ -514,14 +508,15 @@ def predict_one(profile,model):
     return output
 
 
-training_data = generate_training_data(1)
+training_data = generate_training_data(1,20)
 sample_profiles = [item[0] for item in training_data]
 sample_rankings =[item[1] for item in training_data]
 
 print("Best Ranking: ", sample_rankings)
 
 print("Profile:",sample_profiles)
+prediction =[]
 for profile in sample_profiles:
     prediction = predict_one(profile, model)
     print("Prediction: ", prediction)
-
+torch.save(model.state_dict(), "C:/Users/nigis/Downloads/compsoc-main/compsoc-main/compsoc/voting_rules/model_state_dict.pth")
